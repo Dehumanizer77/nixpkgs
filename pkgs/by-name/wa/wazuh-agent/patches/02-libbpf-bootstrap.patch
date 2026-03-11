@@ -1,33 +1,5 @@
-# Patch 02: Disable network fetches in libbpf-bootstrap CMakeLists.txt
-#
-# The Wazuh agent build uses libbpf-bootstrap to compile eBPF programs for
-# the syscheckd FIM (file integrity monitoring) module. The CMakeLists.txt
-# for libbpf-bootstrap attempts to clone three git repositories at CMake
-# configure time:
-#   - libbpf (v1.5.0)
-#   - bpftool (v7.5.0)
-#   - vmlinux.h (main branch)
-#
-# Additionally, it downloads modern.bpf.c from the Wazuh GitHub repository.
-#
-# In the Nix build sandbox, all network access is blocked. We pre-stage all
-# these sources in the postUnpack phase of package.nix by extracting them
-# from the libbpf-bootstrap tarball (which already contains libbpf/, bpftool/,
-# and vmlinux.h/ subdirectories). The modern.bpf.c file is copied from the
-# Wazuh source tree itself.
-#
-# Changes:
-# 1. Remove GIT_REPOSITORY/GIT_TAG from all three ExternalProject_Add calls
-# 2. Add DOWNLOAD_COMMAND "" to each to prevent any download attempts
-# 3. Use NO_PKG_CONFIG=1 and explicit CFLAGS in libbpf build
-#    (NixOS may not provide pkg-config paths for vendored zlib)
-# 4. Comment out file(DOWNLOAD ...) for modern.bpf.c and the related
-#    existence check (the file is already present in the source tree)
-# 5. Remove add_library(modern SHARED ...) which tries to compile the BPF
-#    kernel program as a regular x86_64 shared library -- this fails because
-#    modern.bpf.c uses __builtin_preserve_access_index which is only available
-#    when targeting BPF. The BPF object is compiled correctly by bpf_object().
-#
+# Disable network fetches in libbpf-bootstrap CMakeLists.txt.
+# Use pre-staged local sources instead of git clone / file download.
 --- a/src/external/libbpf-bootstrap/CMakeLists.txt
 +++ b/src/external/libbpf-bootstrap/CMakeLists.txt
 @@ -9,15 +9,15 @@

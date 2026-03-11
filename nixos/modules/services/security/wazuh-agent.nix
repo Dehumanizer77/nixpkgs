@@ -10,7 +10,6 @@ let
     mkIf
     mkOption
     mkPackageOption
-    optional
     optionalString
     concatStringsSep
     naturalSort
@@ -21,10 +20,7 @@ let
   pkg = cfg.package;
   stateDir = "/var/lib/wazuh";
 
-  # ---------------------------------------------------------------------------
-  # T-016: XML generation function
   # Converts a Nix attribute set to Wazuh-compatible ossec.conf XML.
-  # ---------------------------------------------------------------------------
   generateOssecConf =
     settings: extraConfig:
     let
@@ -92,10 +88,7 @@ let
           let
             inner = renderAttrsBody attrs;
           in
-          if inner == "" then
-            "<${key}/>"
-          else
-            "<${key}>\n${indentStr 2 inner}\n</${key}>";
+          if inner == "" then "<${key}/>" else "<${key}>\n${indentStr 2 inner}\n</${key}>";
 
       # Render a single key-value pair to an XML string
       renderKV =
@@ -187,107 +180,66 @@ let
   ];
 
   # Shared serviceConfig applied to every daemon
-  commonServiceConfig =
-    {
-      User = cfg.user;
-      Group = cfg.group;
-      Restart = "on-failure";
-      RestartSec = "5s";
+  commonServiceConfig = {
+    User = cfg.user;
+    Group = cfg.group;
+    Restart = "on-failure";
+    RestartSec = "5s";
 
-      # Wazuh's w_homedir() (src/shared/file_op.c) determines the agent home by
-      # reading /proc/self/exe, then stripping the "/bin/<name>" suffix. For binaries
-      # in the Nix store this yields the store path, not /var/lib/wazuh. WAZUH_HOME
-      # env var is only a fallback when /proc/self/exe is unavailable (never on Linux).
-      #
-      # Solution: the setup service copies daemon binaries to ${stateDir}/bin/.
-      # When the daemon runs from ${stateDir}/bin/wazuh-*, /proc/self/exe resolves to
-      # that path, so w_homedir() correctly computes home = ${stateDir}. All relative
-      # paths (etc/ossec.conf, logs/, queue/, var/, tmp/) then resolve to the state dir.
-      # Binaries are re-copied by the setup service on each nixos-rebuild switch.
+    # Wazuh's w_homedir() (src/shared/file_op.c) determines the agent home by
+    # reading /proc/self/exe, then stripping the "/bin/<name>" suffix. For binaries
+    # in the Nix store this yields the store path, not /var/lib/wazuh. WAZUH_HOME
+    # env var is only a fallback when /proc/self/exe is unavailable (never on Linux).
+    #
+    # Solution: the setup service copies daemon binaries to ${stateDir}/bin/.
+    # When the daemon runs from ${stateDir}/bin/wazuh-*, /proc/self/exe resolves to
+    # that path, so w_homedir() correctly computes home = ${stateDir}. All relative
+    # paths (etc/ossec.conf, logs/, queue/, var/, tmp/) then resolve to the state dir.
+    # Binaries are re-copied by the setup service on each nixos-rebuild switch.
 
-      # systemd creates /var/lib/wazuh and sets ownership via StateDirectory
-      StateDirectory = "wazuh";
-      StateDirectoryMode = "0750";
-      ReadWritePaths = [ stateDir ];
+    # systemd creates /var/lib/wazuh and sets ownership via StateDirectory
+    StateDirectory = "wazuh";
+    StateDirectoryMode = "0750";
+    ReadWritePaths = [ stateDir ];
 
-      # ---------------------------------------------------------------------------
-      # Systemd security hardening (T-031)
-      # ---------------------------------------------------------------------------
+    # Systemd security hardening
+    ProtectSystem = "strict";
+    ProtectHome = true;
+    PrivateTmp = true;
+    PrivateDevices = true;
 
-      # Filesystem isolation
-      ProtectSystem = "strict";
-      ProtectHome = true;
-      PrivateTmp = true;
+    # Capabilities — all dropped; systemd handles user/group switching via
+    # User=/Group=. The Privsep patch makes Privsep_SetUser/SetGroup no-ops.
+    NoNewPrivileges = true;
+    CapabilityBoundingSet = [ "" ];
 
-      # Device access — Wazuh daemons only need /dev/null and /dev/urandom,
-      # both of which PrivateDevices exposes in a private mount. This prevents
-      # access to raw block devices, hardware ports, etc.
-      PrivateDevices = true;
+    # Required for journald log collection (wazuh-logcollector reads the journal)
+    SupplementaryGroups = [ "systemd-journal" ];
 
-      # Capabilities — all dropped; systemd handles user/group switching via
-      # User=/Group=. The Privsep patch makes Privsep_SetUser/SetGroup no-ops.
-      NoNewPrivileges = true;
-      CapabilityBoundingSet = [ "" ];
+    ProtectClock = true;
+    ProtectKernelLogs = true;
+    ProtectControlGroups = true;
+    ProtectKernelModules = true;
+    ProtectKernelTunables = true;
+    ProtectHostname = true;
+    LockPersonality = true;
+    RestrictRealtime = true;
+    RestrictSUIDSGID = true;
+    RestrictNamespaces = true;
+    MemoryDenyWriteExecute = true;
+    RemoveIPC = true;
+    SystemCallArchitectures = "native";
+    UMask = "0027";
 
-      # Required for journald log collection (wazuh-logcollector reads the journal)
-      SupplementaryGroups = [ "systemd-journal" ];
-
-      # Prevent modification of the hardware or system clock
-      ProtectClock = true;
-
-      # Prevent reading from the kernel ring buffer (dmesg)
-      ProtectKernelLogs = true;
-
-      # Prevent modifications to cgroup hierarchies
-      ProtectControlGroups = true;
-
-      # Prevent loading or reading kernel modules
-      ProtectKernelModules = true;
-
-      # Prevent writing to kernel tunables (/proc/sys, /sys)
-      ProtectKernelTunables = true;
-
-      # Prevent changing the system hostname or domainname
-      ProtectHostname = true;
-
-      # Prevent changing the process ABI personality (e.g. to i386 emulation)
-      LockPersonality = true;
-
-      # Prevent acquiring realtime CPU scheduling (SCHED_FIFO, SCHED_RR)
-      RestrictRealtime = true;
-
-      # Prevent creating SUID/SGID files
-      RestrictSUIDSGID = true;
-
-      # Prevent creating new namespaces — Wazuh daemons do not need any
-      # namespacing capabilities (no container management, no sandbox)
-      RestrictNamespaces = true;
-
-      # Prevent creating writable+executable memory mappings.
-      # Confirmed safe: no rwxp mappings observed in any Wazuh daemon.
-      MemoryDenyWriteExecute = true;
-
-      # Prevent IPC objects (SysV semaphores, shared memory) from surviving
-      # after the service exits. Wazuh uses Unix sockets, not SysV IPC.
-      RemoveIPC = true;
-
-      # Restrict to native syscall ABI only (no 32-bit compat emulation on x86_64)
-      SystemCallArchitectures = "native";
-
-      # Default umask: files created by the daemon are not world-readable.
-      # Wazuh state files (logs, keys, databases) should be restricted to
-      # the wazuh user/group only.
-      UMask = "0027";
-
-      # Restrict socket families to only those actually used.
-      # Base: AF_UNIX for inter-daemon communication via /var/lib/wazuh/queue/sockets/.
-      # Network daemons (agentd, execd) additionally need AF_INET/AF_INET6;
-      # those services override this setting below.
-      RestrictAddressFamilies = [ "AF_UNIX" ];
-    }
-    // lib.optionalAttrs (cfg.environmentFile != null) {
-      EnvironmentFile = cfg.environmentFile;
-    };
+    # Restrict socket families to only those actually used.
+    # Base: AF_UNIX for inter-daemon communication via /var/lib/wazuh/queue/sockets/.
+    # Network daemons (agentd, execd) additionally need AF_INET/AF_INET6;
+    # those services override this setting below.
+    RestrictAddressFamilies = [ "AF_UNIX" ];
+  }
+  // lib.optionalAttrs (cfg.environmentFile != null) {
+    EnvironmentFile = cfg.environmentFile;
+  };
 
   # Environment variables injected into every daemon service
   commonEnvironment = {
@@ -309,9 +261,6 @@ let
 
 in
 {
-  # ---------------------------------------------------------------------------
-  # T-017: Module options declaration
-  # ---------------------------------------------------------------------------
   options.services.wazuh-agent = {
 
     enable = mkEnableOption "Wazuh security agent";
@@ -445,23 +394,25 @@ in
           };
 
           localfile = mkOption {
-            type = lib.types.listOf (lib.types.submodule {
-              options = {
-                log_format = mkOption {
-                  type = lib.types.str;
-                  default = "syslog";
-                  description = "Log format type: syslog, journald, json, apache, nginx, etc.";
+            type = lib.types.listOf (
+              lib.types.submodule {
+                options = {
+                  log_format = mkOption {
+                    type = lib.types.str;
+                    default = "syslog";
+                    description = "Log format type: syslog, journald, json, apache, nginx, etc.";
+                  };
+                  location = mkOption {
+                    type = lib.types.str;
+                    description = ''
+                      Path to the log file to monitor, or "journald" to read from the
+                      systemd journal (recommended default on NixOS).
+                    '';
+                    example = "/var/log/nginx/access.log";
+                  };
                 };
-                location = mkOption {
-                  type = lib.types.str;
-                  description = ''
-                    Path to the log file to monitor, or "journald" to read from the
-                    systemd journal (recommended default on NixOS).
-                  '';
-                  example = "/var/log/nginx/access.log";
-                };
-              };
-            });
+              }
+            );
             default = [
               {
                 log_format = "journald";
@@ -476,19 +427,21 @@ in
           };
 
           wodle = mkOption {
-            type = lib.types.listOf (lib.types.submodule {
-              freeformType = lib.types.attrsOf lib.types.anything;
-              options = {
-                name = mkOption {
-                  type = lib.types.str;
-                  description = ''
-                    Wodle (Wazuh module) name. Common values: "syscollector",
-                    "vulnerability-detector", "osquery", "aws-s3".
-                  '';
-                  example = "syscollector";
+            type = lib.types.listOf (
+              lib.types.submodule {
+                freeformType = lib.types.attrsOf lib.types.anything;
+                options = {
+                  name = mkOption {
+                    type = lib.types.str;
+                    description = ''
+                      Wodle (Wazuh module) name. Common values: "syscollector",
+                      "vulnerability-detector", "osquery", "aws-s3".
+                    '';
+                    example = "syscollector";
+                  };
                 };
-              };
-            });
+              }
+            );
             default = [ ];
             description = ''
               Wodle module configurations. Each entry becomes a <wodle name="..."> block
@@ -535,14 +488,9 @@ in
     };
   };
 
-  # ---------------------------------------------------------------------------
   # Config: all system effects, guarded by mkIf cfg.enable
-  # ---------------------------------------------------------------------------
   config = mkIf cfg.enable {
 
-    # -------------------------------------------------------------------------
-    # T-023: Module assertions
-    # -------------------------------------------------------------------------
     assertions = [
       {
         assertion =
@@ -558,9 +506,6 @@ in
       }
     ];
 
-    # -------------------------------------------------------------------------
-    # T-018: System user and group
-    # -------------------------------------------------------------------------
     users.users.${cfg.user} = {
       isSystemUser = true;
       group = cfg.group;
@@ -570,9 +515,6 @@ in
 
     users.groups.${cfg.group} = { };
 
-    # -------------------------------------------------------------------------
-    # T-022: tmpfiles rules
-    # -------------------------------------------------------------------------
     systemd.tmpfiles.rules = [
       # Base state directory (further populated by wazuh-agent-setup.service)
       "d ${stateDir}      0750 ${cfg.user} ${cfg.group} -"
@@ -580,9 +522,6 @@ in
       "d ${stateDir}/tmp  0750 ${cfg.user} ${cfg.group} 1d"
     ];
 
-    # -------------------------------------------------------------------------
-    # T-021: Systemd target
-    # -------------------------------------------------------------------------
     systemd.targets.wazuh-agent = {
       description = "Wazuh Agent";
       wantedBy = [ "multi-user.target" ];
@@ -590,10 +529,6 @@ in
       wants = [ "network-online.target" ];
     };
 
-    # -------------------------------------------------------------------------
-    # T-019: Setup service — creates directory structure, manages symlinks
-    # Runs as root (oneshot) before any daemon starts.
-    # -------------------------------------------------------------------------
     systemd.services.wazuh-agent-setup = {
       description = "Wazuh Agent State Directory Setup";
       wantedBy = [ "wazuh-agent.target" ];
@@ -702,11 +637,6 @@ in
         fi
       '';
     };
-
-    # -------------------------------------------------------------------------
-    # T-020: Five daemon service definitions
-    # Ordering: setup → execd → agentd → (modulesd, syscheckd, logcollector)
-    # -------------------------------------------------------------------------
 
     # wazuh-execd: Active response execution daemon.
     # Must start before agentd so active responses can fire immediately.
@@ -836,5 +766,5 @@ in
     };
   };
 
-  meta.maintainers = [ ];
+  meta.maintainers = [ lib.maintainers.dehumanizer77 ];
 }

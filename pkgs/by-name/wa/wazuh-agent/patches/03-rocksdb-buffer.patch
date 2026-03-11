@@ -1,19 +1,5 @@
-# Patch 03: Fix buffer overflow in RocksDB NumberToHumanString()
-#
-# RocksDB's NumberToHumanString() in util/string_util.cc uses a 19-byte buffer
-# to format int64_t values as human-readable strings (with K/M/G suffixes).
-#
-# A 19-byte buffer is insufficient for the full range of int64_t:
-#   - INT64_MIN = -9223372036854775808 = 20 characters
-#   - With 'G' suffix: -9223372036854775G = 18 characters (barely fits)
-#   - But snprintf's null terminator requires 19 chars minimum for edge cases
-#
-# Under NixOS's hardened compiler flags (specifically -D_FORTIFY_SOURCE=2),
-# the compiler detects the potential buffer truncation and may emit a warning
-# that is promoted to an error. Expanding the buffer to 21 bytes provides
-# sufficient headroom for all int64_t values with any single-character suffix
-# plus null terminator.
-#
+# Fix RocksDB NumberToHumanString buffer size (19 -> 21 bytes).
+# Prevents truncation warning with -D_FORTIFY_SOURCE=2.
 --- a/src/external/rocksdb/util/string_util.cc
 +++ b/src/external/rocksdb/util/string_util.cc
 @@ -115,7 +115,7 @@

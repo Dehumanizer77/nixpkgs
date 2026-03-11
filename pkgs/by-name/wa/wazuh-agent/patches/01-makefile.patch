@@ -1,33 +1,8 @@
-# Patch 01: Build system and privsep fixes for Nix sandbox compatibility
-#
-# Changes in src/Makefile:
-# 1. Remove ${STRIP_TOOL} -x calls for libstdc++ and libgcc_s:
-#    The Nix build sandbox intercepts the strip tool and Nix handles stripping
-#    of all binaries during the fixup phase. Calling strip on GCC's own runtime
-#    libraries during the Wazuh build causes issues because Nix manages the GCC
-#    runtime paths and these files should not be stripped in-place.
-#
-# 2. Change OpenSSL build from ./config to perl ./Configure:
-#    In the Nix sandbox, /usr/bin/env is not available in the traditional path.
-#    The ./config wrapper uses /usr/bin/env to find Perl, which fails. Using
-#    perl ./Configure directly with an explicit target is more reliable and
-#    avoids the env wrapper entirely.
-#
-# 3. Fix audit-userspace autoreconf INSTALL permission issue:
-#    autoreconf --install calls automake --add-missing --copy which copies the
-#    INSTALL template from the Nix store (read-only, mode 444). Then autogen.sh
-#    tries to overwrite it with cp INSTALL.tmp INSTALL, which fails. The fix
-#    inlines the autogen.sh steps into the Makefile rule, adding a chmod after
-#    autoreconf so the cp succeeds.
-#
-# Changes in src/shared/privsep_op.c:
-# 4. Make Privsep_SetUser() and Privsep_SetGroup() no-ops returning OS_SUCCESS:
-#    The Nix build sandbox runs as an unprivileged user; setuid/setgroups calls
-#    fail immediately. At runtime on NixOS, systemd handles all user/group
-#    switching via the User=/Group= service directives before exec-ing the
-#    daemon binary. The C-level privsep functions are therefore unnecessary
-#    and their failure would prevent the daemon from starting.
-#
+# Nix build compatibility fixes for src/Makefile and src/shared/privsep_op.c:
+# - Remove strip calls (handled by Nix fixup phase)
+# - Use perl ./Configure for OpenSSL (avoid /usr/bin/env)
+# - Fix audit-userspace autoreconf INSTALL permission issue
+# - Make Privsep_SetUser/SetGroup no-ops (systemd handles user switching)
 --- a/src/Makefile
 +++ b/src/Makefile
 @@ -826,13 +826,13 @@

@@ -1,7 +1,7 @@
 { pkgs, ... }:
 {
   name = "wazuh-agent";
-  meta.maintainers = with pkgs.lib.maintainers; [ ];
+  meta.maintainers = with pkgs.lib.maintainers; [ dehumanizer77 ];
 
   nodes.agent =
     { ... }:

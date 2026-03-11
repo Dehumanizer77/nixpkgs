@@ -1,3 +1,5 @@
+# Rename local variable 'data' to 'dbData' in berkeleyRpmDbHelper.h
+# to avoid C++17 ambiguity with std::data.
 --- a/src/data_provider/src/packages/berkeleyRpmDbHelper.h
 +++ b/src/data_provider/src/packages/berkeleyRpmDbHelper.h
 @@ -275,20 +275,20 @@
