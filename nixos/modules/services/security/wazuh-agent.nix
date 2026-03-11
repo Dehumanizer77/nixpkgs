@@ -578,6 +578,7 @@ in
         mkd "$STATE/queue/fim/db"
         mkd "$STATE/queue/syscollector"
         mkd "$STATE/queue/logcollector"
+        mkd "$STATE/queue/rids"
         mkd "$STATE/tmp"
         mkd "$STATE/wodles"
         mkd "$STATE/active-response"
