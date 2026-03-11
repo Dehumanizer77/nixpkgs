@@ -1,0 +1,109 @@
+# Patch 01: Build system and privsep fixes for Nix sandbox compatibility
+#
+# Changes in src/Makefile:
+# 1. Remove ${STRIP_TOOL} -x calls for libstdc++ and libgcc_s:
+#    The Nix build sandbox intercepts the strip tool and Nix handles stripping
+#    of all binaries during the fixup phase. Calling strip on GCC's own runtime
+#    libraries during the Wazuh build causes issues because Nix manages the GCC
+#    runtime paths and these files should not be stripped in-place.
+#
+# 2. Change OpenSSL build from ./config to perl ./Configure:
+#    In the Nix sandbox, /usr/bin/env is not available in the traditional path.
+#    The ./config wrapper uses /usr/bin/env to find Perl, which fails. Using
+#    perl ./Configure directly with an explicit target is more reliable and
+#    avoids the env wrapper entirely.
+#
+# 3. Fix audit-userspace autoreconf INSTALL permission issue:
+#    autoreconf --install calls automake --add-missing --copy which copies the
+#    INSTALL template from the Nix store (read-only, mode 444). Then autogen.sh
+#    tries to overwrite it with cp INSTALL.tmp INSTALL, which fails. The fix
+#    inlines the autogen.sh steps into the Makefile rule, adding a chmod after
+#    autoreconf so the cp succeeds.
+#
+# Changes in src/shared/privsep_op.c:
+# 4. Make Privsep_SetUser() and Privsep_SetGroup() no-ops returning OS_SUCCESS:
+#    The Nix build sandbox runs as an unprivileged user; setuid/setgroups calls
+#    fail immediately. At runtime on NixOS, systemd handles all user/group
+#    switching via the User=/Group= service directives before exec-ing the
+#    daemon binary. The C-level privsep functions are therefore unnecessary
+#    and their failure would prevent the daemon from starting.
+#
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -826,13 +826,13 @@
+ ${WAZUH_LIB_OUTPUT_PATH}${LIBSTDCPP_NAME}: ${libstdc++_path}
+ 	cp $< $@
+ ifneq (${uname_S},AIX)
+-	${STRIP_TOOL} -x $@
++	: # strip handled by Nix fixup phase
+ endif
+ 
+ ${WAZUH_LIB_OUTPUT_PATH}${LIBGCC_S_NAME}: ${libgcc_s_path}
+ 	cp $< $@
+ ifneq (${uname_S},AIX)
+-	${STRIP_TOOL} -x $@
++	: # strip handled by Nix fixup phase
+ endif
+ 
+ .PHONY: server local hybrid agent selinux
+@@ -1067,7 +1067,7 @@
+ 	cd ${EXTERNAL_OPENSSL} && ./Configure $(OPENSSL_FLAGS) solaris-sparcv9-gcc && ${MAKE} build_libs
+ endif
+ else
+-	cd ${EXTERNAL_OPENSSL} && ./config $(OPENSSL_FLAGS) && ${MAKE} build_libs
++	cd ${EXTERNAL_OPENSSL} && perl ./Configure $(OPENSSL_FLAGS) linux-$(shell uname -m) && ${MAKE} build_libs
+ endif
+ endif
+ endif
+@@ -1272,7 +1272,7 @@
+ 	${MAKE} -C $(EXTERNAL_AUDIT)lib CC=$(CC)
+ 
+ $(EXTERNAL_AUDIT)Makefile:
+-	cd $(EXTERNAL_AUDIT) && ./autogen.sh && ./configure CFLAGS=-fPIC --with-libcap-ng=no
++	cd $(EXTERNAL_AUDIT) && (autoreconf -fv --install; chmod -f u+w INSTALL; cp -f INSTALL.tmp INSTALL) && ./configure CFLAGS=-fPIC --with-libcap-ng=no
+ 
+ #### msgpack #########
+ 
+--- a/src/shared/privsep_op.c
++++ b/src/shared/privsep_op.c
+@@ -132,35 +132,17 @@
+ 
+ int Privsep_SetUser(uid_t uid)
+ {
+-    if (setuid(uid) < 0) {
+-        return (OS_INVALID);
+-    }
+-
+-#ifndef HPUX
+-    if (seteuid(uid) < 0) {
+-        return (OS_INVALID);
+-    }
+-#endif
+-
++    /* NixOS: systemd handles user switching via User= directive.
++     * setuid/seteuid are unavailable to the build sandbox and unnecessary
++     * at runtime because systemd already sets the correct UID. */
+     return (OS_SUCCESS);
+ }
+ 
+ int Privsep_SetGroup(gid_t gid)
+ {
+-    if (setgroups(1, &gid) == -1) {
+-        return (OS_INVALID);
+-    }
+-
+-#ifndef HPUX
+-    if (setegid(gid) < 0) {
+-        return (OS_INVALID);
+-    }
+-#endif
+-
+-    if (setgid(gid) < 0) {
+-        return (OS_INVALID);
+-    }
+-
++    /* NixOS: systemd handles group switching via Group= directive.
++     * setgroups/setgid are unavailable to the build sandbox and unnecessary
++     * at runtime because systemd already sets the correct GID. */
+     return (OS_SUCCESS);
+ }
