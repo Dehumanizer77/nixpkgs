@@ -591,7 +591,7 @@ in
         # file paths (etc/, logs/, queue/, var/) resolve to the state directory.
         # Binaries are re-copied on each nixos-rebuild switch so package updates
         # always take effect.
-        for bin in wazuh-execd wazuh-agentd wazuh-modulesd wazuh-syscheckd wazuh-logcollector; do
+        for bin in wazuh-execd wazuh-agentd wazuh-modulesd wazuh-syscheckd wazuh-logcollector wazuh-control; do
           cp -f "$PKG/bin/$bin" "$STATE/bin/$bin"
           chown "root:$GRP" "$STATE/bin/$bin"
           chmod 0750 "$STATE/bin/$bin"
