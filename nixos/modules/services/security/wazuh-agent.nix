@@ -92,7 +92,10 @@ let
           let
             inner = renderAttrsBody attrs;
           in
-          if inner == "" then "<${key}/>" else "<${key}>\n${indentStr 2 inner}\n</${key}>";
+          if inner == "" then
+            "<${key}/>"
+          else
+            "<${key}>\n${indentStr 2 inner}\n</${key}>";
 
       # Render a single key-value pair to an XML string
       renderKV =
@@ -184,41 +187,107 @@ let
   ];
 
   # Shared serviceConfig applied to every daemon
-  commonServiceConfig = {
-    User = cfg.user;
-    Group = cfg.group;
-    Restart = "on-failure";
-    RestartSec = "5s";
+  commonServiceConfig =
+    {
+      User = cfg.user;
+      Group = cfg.group;
+      Restart = "on-failure";
+      RestartSec = "5s";
 
-    # Wazuh's w_homedir() (src/shared/file_op.c) determines the agent home by
-    # reading /proc/self/exe, then stripping the "/bin/<name>" suffix. For binaries
-    # in the Nix store this yields the store path, not /var/lib/wazuh. WAZUH_HOME
-    # env var is only a fallback when /proc/self/exe is unavailable (never on Linux).
-    #
-    # Solution: the setup service copies daemon binaries to ${stateDir}/bin/.
-    # When the daemon runs from ${stateDir}/bin/wazuh-*, /proc/self/exe resolves to
-    # that path, so w_homedir() correctly computes home = ${stateDir}. All relative
-    # paths (etc/ossec.conf, logs/, queue/, var/, tmp/) then resolve to the state dir.
-    # Binaries are re-copied by the setup service on each nixos-rebuild switch.
+      # Wazuh's w_homedir() (src/shared/file_op.c) determines the agent home by
+      # reading /proc/self/exe, then stripping the "/bin/<name>" suffix. For binaries
+      # in the Nix store this yields the store path, not /var/lib/wazuh. WAZUH_HOME
+      # env var is only a fallback when /proc/self/exe is unavailable (never on Linux).
+      #
+      # Solution: the setup service copies daemon binaries to ${stateDir}/bin/.
+      # When the daemon runs from ${stateDir}/bin/wazuh-*, /proc/self/exe resolves to
+      # that path, so w_homedir() correctly computes home = ${stateDir}. All relative
+      # paths (etc/ossec.conf, logs/, queue/, var/, tmp/) then resolve to the state dir.
+      # Binaries are re-copied by the setup service on each nixos-rebuild switch.
 
-    # systemd creates /var/lib/wazuh and sets ownership via StateDirectory
-    StateDirectory = "wazuh";
-    StateDirectoryMode = "0750";
-    ReadWritePaths = [ stateDir ];
+      # systemd creates /var/lib/wazuh and sets ownership via StateDirectory
+      StateDirectory = "wazuh";
+      StateDirectoryMode = "0750";
+      ReadWritePaths = [ stateDir ];
 
-    # Hardening
-    ProtectSystem = "strict";
-    ProtectHome = true;
-    PrivateTmp = true;
-    NoNewPrivileges = true;
-    # Drop all capabilities — systemd handles user/group switching via User=/Group=
-    CapabilityBoundingSet = [ "" ];
-    # Required for journald log collection (wazuh-logcollector reads the journal)
-    SupplementaryGroups = [ "systemd-journal" ];
-  }
-  // lib.optionalAttrs (cfg.environmentFile != null) {
-    EnvironmentFile = cfg.environmentFile;
-  };
+      # ---------------------------------------------------------------------------
+      # Systemd security hardening (T-031)
+      # ---------------------------------------------------------------------------
+
+      # Filesystem isolation
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+
+      # Device access — Wazuh daemons only need /dev/null and /dev/urandom,
+      # both of which PrivateDevices exposes in a private mount. This prevents
+      # access to raw block devices, hardware ports, etc.
+      PrivateDevices = true;
+
+      # Capabilities — all dropped; systemd handles user/group switching via
+      # User=/Group=. The Privsep patch makes Privsep_SetUser/SetGroup no-ops.
+      NoNewPrivileges = true;
+      CapabilityBoundingSet = [ "" ];
+
+      # Required for journald log collection (wazuh-logcollector reads the journal)
+      SupplementaryGroups = [ "systemd-journal" ];
+
+      # Prevent modification of the hardware or system clock
+      ProtectClock = true;
+
+      # Prevent reading from the kernel ring buffer (dmesg)
+      ProtectKernelLogs = true;
+
+      # Prevent modifications to cgroup hierarchies
+      ProtectControlGroups = true;
+
+      # Prevent loading or reading kernel modules
+      ProtectKernelModules = true;
+
+      # Prevent writing to kernel tunables (/proc/sys, /sys)
+      ProtectKernelTunables = true;
+
+      # Prevent changing the system hostname or domainname
+      ProtectHostname = true;
+
+      # Prevent changing the process ABI personality (e.g. to i386 emulation)
+      LockPersonality = true;
+
+      # Prevent acquiring realtime CPU scheduling (SCHED_FIFO, SCHED_RR)
+      RestrictRealtime = true;
+
+      # Prevent creating SUID/SGID files
+      RestrictSUIDSGID = true;
+
+      # Prevent creating new namespaces — Wazuh daemons do not need any
+      # namespacing capabilities (no container management, no sandbox)
+      RestrictNamespaces = true;
+
+      # Prevent creating writable+executable memory mappings.
+      # Confirmed safe: no rwxp mappings observed in any Wazuh daemon.
+      MemoryDenyWriteExecute = true;
+
+      # Prevent IPC objects (SysV semaphores, shared memory) from surviving
+      # after the service exits. Wazuh uses Unix sockets, not SysV IPC.
+      RemoveIPC = true;
+
+      # Restrict to native syscall ABI only (no 32-bit compat emulation on x86_64)
+      SystemCallArchitectures = "native";
+
+      # Default umask: files created by the daemon are not world-readable.
+      # Wazuh state files (logs, keys, databases) should be restricted to
+      # the wazuh user/group only.
+      UMask = "0027";
+
+      # Restrict socket families to only those actually used.
+      # Base: AF_UNIX for inter-daemon communication via /var/lib/wazuh/queue/sockets/.
+      # Network daemons (agentd, execd) additionally need AF_INET/AF_INET6;
+      # those services override this setting below.
+      RestrictAddressFamilies = [ "AF_UNIX" ];
+    }
+    // lib.optionalAttrs (cfg.environmentFile != null) {
+      EnvironmentFile = cfg.environmentFile;
+    };
 
   # Environment variables injected into every daemon service
   commonEnvironment = {
@@ -376,25 +445,23 @@ in
           };
 
           localfile = mkOption {
-            type = lib.types.listOf (
-              lib.types.submodule {
-                options = {
-                  log_format = mkOption {
-                    type = lib.types.str;
-                    default = "syslog";
-                    description = "Log format type: syslog, journald, json, apache, nginx, etc.";
-                  };
-                  location = mkOption {
-                    type = lib.types.str;
-                    description = ''
-                      Path to the log file to monitor, or "journald" to read from the
-                      systemd journal (recommended default on NixOS).
-                    '';
-                    example = "/var/log/nginx/access.log";
-                  };
+            type = lib.types.listOf (lib.types.submodule {
+              options = {
+                log_format = mkOption {
+                  type = lib.types.str;
+                  default = "syslog";
+                  description = "Log format type: syslog, journald, json, apache, nginx, etc.";
                 };
-              }
-            );
+                location = mkOption {
+                  type = lib.types.str;
+                  description = ''
+                    Path to the log file to monitor, or "journald" to read from the
+                    systemd journal (recommended default on NixOS).
+                  '';
+                  example = "/var/log/nginx/access.log";
+                };
+              };
+            });
             default = [
               {
                 log_format = "journald";
@@ -409,21 +476,19 @@ in
           };
 
           wodle = mkOption {
-            type = lib.types.listOf (
-              lib.types.submodule {
-                freeformType = lib.types.attrsOf lib.types.anything;
-                options = {
-                  name = mkOption {
-                    type = lib.types.str;
-                    description = ''
-                      Wodle (Wazuh module) name. Common values: "syscollector",
-                      "vulnerability-detector", "osquery", "aws-s3".
-                    '';
-                    example = "syscollector";
-                  };
+            type = lib.types.listOf (lib.types.submodule {
+              freeformType = lib.types.attrsOf lib.types.anything;
+              options = {
+                name = mkOption {
+                  type = lib.types.str;
+                  description = ''
+                    Wodle (Wazuh module) name. Common values: "syscollector",
+                    "vulnerability-detector", "osquery", "aws-s3".
+                  '';
+                  example = "syscollector";
                 };
-              }
-            );
+              };
+            });
             default = [ ];
             description = ''
               Wodle module configurations. Each entry becomes a <wodle name="..."> block
@@ -645,6 +710,8 @@ in
 
     # wazuh-execd: Active response execution daemon.
     # Must start before agentd so active responses can fire immediately.
+    # Needs AF_INET/AF_INET6 in addition to AF_UNIX because active responses
+    # may trigger network-based actions.
     systemd.services.wazuh-execd = {
       description = "Wazuh Execution Daemon";
       partOf = [ "wazuh-agent.target" ];
@@ -659,11 +726,18 @@ in
         Type = "simple";
         # Run from the stateDir bin/ so /proc/self/exe resolves to stateDir
         ExecStart = "${stateDir}/bin/wazuh-execd -f";
+        # Active responses may trigger network actions (e.g., firewall rules via iproute2)
+        RestrictAddressFamilies = [
+          "AF_UNIX"
+          "AF_INET"
+          "AF_INET6"
+        ];
       };
     };
 
     # wazuh-agentd: Main agent daemon — connects to manager.
     # Depends on execd being up so active response infrastructure is ready.
+    # Needs AF_INET/AF_INET6 for TCP connection to the Wazuh manager (port 1514/1515).
     systemd.services.wazuh-agentd = {
       description = "Wazuh Agent Daemon";
       partOf = [ "wazuh-agent.target" ];
@@ -680,11 +754,18 @@ in
       serviceConfig = commonServiceConfig // {
         Type = "simple";
         ExecStart = "${stateDir}/bin/wazuh-agentd -f";
+        # Connects to manager via TCP (port 1514) and enrollment via TCP (port 1515)
+        RestrictAddressFamilies = [
+          "AF_UNIX"
+          "AF_INET"
+          "AF_INET6"
+        ];
       };
     };
 
     # wazuh-modulesd: Modules daemon (rootcheck, syscollector, vulnerability-detector, etc.)
     # Starts after agentd so it can report findings immediately.
+    # Uses only AF_UNIX for IPC with other daemons via queue/sockets.
     systemd.services.wazuh-modulesd = {
       description = "Wazuh Modules Daemon";
       partOf = [ "wazuh-agent.target" ];
@@ -706,6 +787,7 @@ in
 
     # wazuh-syscheckd: File integrity monitoring daemon.
     # Starts after agentd so FIM events are forwarded immediately.
+    # Uses only AF_UNIX for IPC; FIM uses inotify (kernel API, not a socket).
     systemd.services.wazuh-syscheckd = {
       description = "Wazuh File Integrity Monitoring Daemon";
       partOf = [ "wazuh-agent.target" ];
@@ -727,6 +809,8 @@ in
 
     # wazuh-logcollector: Log collection daemon (journald, files, etc.)
     # Starts after agentd so collected logs are forwarded immediately.
+    # Needs read access to /var/log/journal for systemd journal collection.
+    # Uses AF_UNIX only: communicates with agentd via queue/sockets/logcollector socket.
     systemd.services.wazuh-logcollector = {
       description = "Wazuh Log Collector Daemon";
       partOf = [ "wazuh-agent.target" ];
@@ -743,6 +827,11 @@ in
       serviceConfig = commonServiceConfig // {
         Type = "simple";
         ExecStart = "${stateDir}/bin/wazuh-logcollector -f";
+        # Journal files are under /var/log/journal — read access required when
+        # localfile log_format = "journald" is configured (the NixOS default).
+        # ProtectSystem=strict makes the filesystem read-only except ReadWritePaths,
+        # so we must explicitly allow read access to the journal directory.
+        ReadOnlyPaths = [ "/var/log/journal" ];
       };
     };
   };
