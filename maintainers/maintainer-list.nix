@@ -6377,6 +6377,12 @@
     email = "deftdawg@gmail.com";
     githubId = 4991612;
   };
+  dehumanizer77 = {
+    name = "JoHnY";
+    email = "github@2600.sk";
+    github = "Dehumanizer77";
+    githubId = 1876451;
+  };
   deifactor = {
     name = "Ash Zahlen";
     email = "ext0l@riseup.net";
