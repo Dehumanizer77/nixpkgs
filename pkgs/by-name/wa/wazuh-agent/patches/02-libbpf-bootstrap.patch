@@ -1,0 +1,87 @@
+# Disable network fetches in libbpf-bootstrap CMakeLists.txt.
+# Use pre-staged local sources instead of git clone / file download.
+# Fix parallel build race: add explicit dependency from change_libbpf_include to modern_skel.
+--- a/src/external/libbpf-bootstrap/CMakeLists.txt
++++ b/src/external/libbpf-bootstrap/CMakeLists.txt
+@@ -9,15 +9,15 @@
+ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/tools/cmake)
+ 
+ # Build vendored libbpf
+-# Clone libbpf repository
++# NixOS: libbpf sources are pre-staged from the libbpf-bootstrap tarball;
++# disable network access by removing GIT_REPOSITORY and GIT_TAG.
+ include(ExternalProject)
+ ExternalProject_Add(libbpf
+   PREFIX libbpf
+-  GIT_REPOSITORY https://github.com/libbpf/libbpf.git
+-  GIT_TAG v1.5.0  # v1.4.0: f11758a7807893330cc87481a7a16cf956326ab3
+   SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libbpf
++  DOWNLOAD_COMMAND ""
+   CONFIGURE_COMMAND ""
+-  BUILD_COMMAND cd ${CMAKE_CURRENT_SOURCE_DIR}/libbpf/src && make CFLAGS="-fPIC${CFLAGS}" LDFLAGS="-lelf${LDFLAGS}"
++  BUILD_COMMAND cd ${CMAKE_CURRENT_SOURCE_DIR}/libbpf/src && make NO_PKG_CONFIG=1 CFLAGS=-fPIC EXTRA_CFLAGS=-I${CMAKE_CURRENT_SOURCE_DIR}/../zlib
+     OBJDIR=${CMAKE_CURRENT_BINARY_DIR}/libbpf/libbpf
+     DESTDIR=${CMAKE_CURRENT_BINARY_DIR}/libbpf
+     INCLUDEDIR=
+@@ -29,12 +29,11 @@
+   STEP_TARGETS build
+ )
+ 
+-# Clone bpftool repository
++# NixOS: bpftool sources are pre-staged; disable network access.
+ ExternalProject_Add(bpftool
+   PREFIX bpftool
+-  GIT_REPOSITORY https://github.com/libbpf/bpftool.git
+-  GIT_TAG v7.5.0
+   SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/bpftool
++  DOWNLOAD_COMMAND ""
+   CONFIGURE_COMMAND ""
+   BUILD_COMMAND cd ${CMAKE_CURRENT_SOURCE_DIR}/bpftool/src && make bootstrap
+     OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/bpftool/
+@@ -43,12 +42,11 @@
+   STEP_TARGETS build
+ )
+ 
+-# Clone vmlinux.h repository
++# NixOS: vmlinux.h headers are pre-staged; disable network access.
+ ExternalProject_Add(vmlinux.h
+   PREFIX vmlinux.h
+-  GIT_REPOSITORY https://github.com/libbpf/vmlinux.h.git
+-  GIT_TAG main
+   SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vmlinux.h
++  DOWNLOAD_COMMAND ""
+   CONFIGURE_COMMAND ""
+   BUILD_COMMAND ""
+   INSTALL_COMMAND ""
+@@ -78,14 +76,10 @@
+ # Set the branch of the Wazuh repository as a cache variable
+ set(WAZUH_BRANCH "v4.12.0" CACHE STRING "Wazuh branch for modern.bpf.c")
+ 
+-# Download modern.bpf.c with error checking that verifies file existence and non-zero size
+-set(FILE_URL "https://raw.githubusercontent.com/wazuh/wazuh/${WAZUH_BRANCH}/src/syscheckd/src/ebpf/src/modern.bpf.c")
++# NixOS: modern.bpf.c is pre-staged from the Wazuh source tree at
++# src/syscheckd/src/ebpf/src/modern.bpf.c; skip the network download.
+ set(DEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/modern.bpf.c")
+-file(DOWNLOAD ${FILE_URL} ${DEST_PATH})
+-file(SIZE ${DEST_PATH} FILE_SIZE)
+-if(NOT EXISTS ${DEST_PATH} OR FILE_SIZE EQUAL 0)
+-    message(FATAL_ERROR "Failed to download modern.bpf.c from ${FILE_URL}. Please check WAZUH_BRANCH.")
+-endif()
++# file(DOWNLOAD ...) disabled for Nix sandbox - file is pre-staged
+ 
+ set(BPFOBJECT_BPFTOOL_EXE ${CMAKE_CURRENT_BINARY_DIR}/bpftool/bootstrap/bpftool)
+ set(BPFOBJECT_VMLINUX_H ${CMAKE_CURRENT_SOURCE_DIR}/vmlinux.h/include/${ARCH}/vmlinux.h)
+@@ -100,11 +94,10 @@
+ bpf_object(modern src/modern.bpf.c)
+ add_dependencies(modern_skel libbpf-build bpftool-build vmlinux.h)
+ 
+-add_library(modern SHARED src/modern.bpf.c)
+-target_link_libraries(modern modern_skel)
+-
+ add_custom_target(change_libbpf_include ALL
+   COMMAND sed -i 's|<bpf/libbpf.h>|"wrapper_bpf.h"|' ${CMAKE_CURRENT_BINARY_DIR}/modern.skel.h
+   DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/modern.skel.h
+   COMMENT "Change libbpf include by wrapper_bpf.h from skeleton"
+ )
++# Ensure change_libbpf_include waits for the BPF skeleton to be generated
++add_dependencies(change_libbpf_include modern_skel)

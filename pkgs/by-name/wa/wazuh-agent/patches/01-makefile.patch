@@ -1,0 +1,84 @@
+# Nix build compatibility fixes for src/Makefile and src/shared/privsep_op.c:
+# - Remove strip calls (handled by Nix fixup phase)
+# - Use perl ./Configure for OpenSSL (avoid /usr/bin/env)
+# - Fix audit-userspace autoreconf INSTALL permission issue
+# - Make Privsep_SetUser/SetGroup no-ops (systemd handles user switching)
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -826,13 +826,13 @@
+ ${WAZUH_LIB_OUTPUT_PATH}${LIBSTDCPP_NAME}: ${libstdc++_path}
+ 	cp $< $@
+ ifneq (${uname_S},AIX)
+-	${STRIP_TOOL} -x $@
++	: # strip handled by Nix fixup phase
+ endif
+ 
+ ${WAZUH_LIB_OUTPUT_PATH}${LIBGCC_S_NAME}: ${libgcc_s_path}
+ 	cp $< $@
+ ifneq (${uname_S},AIX)
+-	${STRIP_TOOL} -x $@
++	: # strip handled by Nix fixup phase
+ endif
+ 
+ .PHONY: server local hybrid agent selinux
+@@ -1067,7 +1067,7 @@
+ 	cd ${EXTERNAL_OPENSSL} && ./Configure $(OPENSSL_FLAGS) solaris-sparcv9-gcc && ${MAKE} build_libs
+ endif
+ else
+-	cd ${EXTERNAL_OPENSSL} && ./config $(OPENSSL_FLAGS) && ${MAKE} build_libs
++	cd ${EXTERNAL_OPENSSL} && perl ./Configure $(OPENSSL_FLAGS) linux-$(shell uname -m) && ${MAKE} build_libs
+ endif
+ endif
+ endif
+@@ -1272,7 +1272,7 @@
+ 	${MAKE} -C $(EXTERNAL_AUDIT)lib CC=$(CC)
+ 
+ $(EXTERNAL_AUDIT)Makefile:
+-	cd $(EXTERNAL_AUDIT) && ./autogen.sh && ./configure CFLAGS=-fPIC --with-libcap-ng=no
++	cd $(EXTERNAL_AUDIT) && (autoreconf -fv --install; chmod -f u+w INSTALL; cp -f INSTALL.tmp INSTALL) && ./configure CFLAGS=-fPIC --with-libcap-ng=no
+ 
+ #### msgpack #########
+ 
+--- a/src/shared/privsep_op.c
++++ b/src/shared/privsep_op.c
+@@ -132,35 +132,17 @@
+ 
+ int Privsep_SetUser(uid_t uid)
+ {
+-    if (setuid(uid) < 0) {
+-        return (OS_INVALID);
+-    }
+-
+-#ifndef HPUX
+-    if (seteuid(uid) < 0) {
+-        return (OS_INVALID);
+-    }
+-#endif
+-
++    /* NixOS: systemd handles user switching via User= directive.
++     * setuid/seteuid are unavailable to the build sandbox and unnecessary
++     * at runtime because systemd already sets the correct UID. */
+     return (OS_SUCCESS);
+ }
+ 
+ int Privsep_SetGroup(gid_t gid)
+ {
+-    if (setgroups(1, &gid) == -1) {
+-        return (OS_INVALID);
+-    }
+-
+-#ifndef HPUX
+-    if (setegid(gid) < 0) {
+-        return (OS_INVALID);
+-    }
+-#endif
+-
+-    if (setgid(gid) < 0) {
+-        return (OS_INVALID);
+-    }
+-
++    /* NixOS: systemd handles group switching via Group= directive.
++     * setgroups/setgid are unavailable to the build sandbox and unnecessary
++     * at runtime because systemd already sets the correct GID. */
+     return (OS_SUCCESS);
+ }
